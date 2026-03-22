@@ -87,7 +87,7 @@ def test_upsert_inserts_block_before_anchor(tmp_path):
     cfg = _initialized_file(tmp_path)
     policy = _simple_policy()
     with _mock_nft():
-        upsert("myapp", policy, cfg)
+        upsert("myapp", "abc1234", policy, cfg)
     content = cfg.nft_isolation_file.read_text()
     assert "BEGIN_APP myapp" in content
     assert "END_APP myapp" in content
@@ -104,8 +104,8 @@ def test_upsert_replaces_existing_block(tmp_path):
         egress_default="deny",
     )
     with _mock_nft():
-        upsert("myapp", policy1, cfg)
-        upsert("myapp", policy2, cfg)
+        upsert("myapp", "abc1234", policy1, cfg)
+        upsert("myapp", "abc1234", policy2, cfg)
     content = cfg.nft_isolation_file.read_text()
     assert content.count("BEGIN_APP myapp") == 1
     assert "9.9.9.0/24" in content
@@ -114,8 +114,8 @@ def test_upsert_replaces_existing_block(tmp_path):
 def test_upsert_multiple_apps_coexist(tmp_path):
     cfg = _initialized_file(tmp_path)
     with _mock_nft():
-        upsert("app1", _simple_policy(), cfg)
-        upsert("app2", _simple_policy(), cfg)
+        upsert("app1", "abc1234", _simple_policy(), cfg)
+        upsert("app2", "abc1234", _simple_policy(), cfg)
     content = cfg.nft_isolation_file.read_text()
     assert "BEGIN_APP app1" in content
     assert "BEGIN_APP app2" in content
@@ -133,10 +133,10 @@ def test_upsert_one_app_does_not_affect_other(tmp_path):
         egress_default="deny",
     )
     with _mock_nft():
-        upsert("app1", policy_a, cfg)
-        upsert("app2", policy_b, cfg)
+        upsert("app1", "abc1234", policy_a, cfg)
+        upsert("app2", "def5678", policy_b, cfg)
         # Re-upsert app1 only
-        upsert("app1", policy_a, cfg)
+        upsert("app1", "abc1234", policy_a, cfg)
     content = cfg.nft_isolation_file.read_text()
     assert "2.2.2.0/24" in content  # app2 rules still present
 
@@ -144,8 +144,8 @@ def test_upsert_one_app_does_not_affect_other(tmp_path):
 def test_anchor_always_present_after_upsert(tmp_path):
     cfg = _initialized_file(tmp_path)
     with _mock_nft():
-        upsert("app1", _simple_policy(), cfg)
-        upsert("app2", _simple_policy(), cfg)
+        upsert("app1", "abc1234", _simple_policy(), cfg)
+        upsert("app2", "abc1234", _simple_policy(), cfg)
         remove("app1", cfg)
     assert _ANCHOR in cfg.nft_isolation_file.read_text()
 
@@ -156,7 +156,7 @@ def test_anchor_always_present_after_upsert(tmp_path):
 def test_remove_existing_app(tmp_path):
     cfg = _initialized_file(tmp_path)
     with _mock_nft():
-        upsert("myapp", _simple_policy(), cfg)
+        upsert("myapp", "abc1234", _simple_policy(), cfg)
         remove("myapp", cfg)
     content = cfg.nft_isolation_file.read_text()
     assert "BEGIN_APP myapp" not in content
@@ -175,8 +175,8 @@ def test_remove_unknown_app_is_noop(tmp_path):
 def test_remove_one_does_not_affect_other(tmp_path):
     cfg = _initialized_file(tmp_path)
     with _mock_nft():
-        upsert("app1", _simple_policy(), cfg)
-        upsert("app2", _simple_policy(), cfg)
+        upsert("app1", "abc1234", _simple_policy(), cfg)
+        upsert("app2", "abc1234", _simple_policy(), cfg)
         remove("app1", cfg)
     content = cfg.nft_isolation_file.read_text()
     assert "BEGIN_APP app1" not in content
@@ -189,8 +189,8 @@ def test_remove_one_does_not_affect_other(tmp_path):
 def test_list_apps_returns_all_managed(tmp_path):
     cfg = _initialized_file(tmp_path)
     with _mock_nft():
-        upsert("alpha", _simple_policy(), cfg)
-        upsert("beta", _simple_policy(), cfg)
+        upsert("alpha", "abc1234", _simple_policy(), cfg)
+        upsert("beta", "def5678", _simple_policy(), cfg)
     apps = list_apps(cfg)
     assert set(apps) == {"alpha", "beta"}
 

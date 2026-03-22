@@ -77,6 +77,7 @@ def list_apps(config: Config) -> list[str]:
 
 def upsert(
     app_id: str,
+    instance_id: str,
     policy: Policy,
     config: Config,
     dry_run: bool = False,
@@ -90,7 +91,7 @@ def upsert(
     content = config.nft_isolation_file.read_text()
 
     # Build new block
-    block_body = render_block(app_id, policy, dynamic_ips, config.wan_iface)
+    block_body = render_block(app_id, instance_id, policy, dynamic_ips, config.wan_iface)
     new_block = (
         f"        # === BEGIN_APP {app_id} ===\n"
         f"{block_body}"
@@ -156,10 +157,11 @@ def refresh(
     policy: Policy,
     config: Config,
     dry_run: bool = False,
+    instance_id: str | None = None,
 ) -> None:
     """Re-resolve dynamic entries and update named set in-place.
 
-    Falls back to full upsert if set is missing.
+    Falls back to full upsert if set is missing and instance_id is provided.
     No-op if no dynamic entries.
     """
     has_dynamic = any(r.fqdn or r.service or r.cidr_url for r in policy.egress_rules)
@@ -170,8 +172,11 @@ def refresh(
     content = config.nft_isolation_file.read_text()
     set_pat = _RE_NAMED_SET(app_id)
     if not set_pat.search(content):
+        if instance_id is None:
+            log.warning("%s refresh %s: set missing but no instance_id, skipping upsert", PREFIX, app_id)
+            return
         log.info("%s refresh %s: set missing, falling back to upsert", PREFIX, app_id)
-        upsert(app_id, policy, config, dry_run=dry_run)
+        upsert(app_id, instance_id, policy, config, dry_run=dry_run)
         return
 
     validate_fqdn_domains(policy, config.trusted_fqdn_domains)

@@ -157,6 +157,11 @@ docker = [
     { name = "docker" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "docker", marker = "extra == 'docker'" },
@@ -164,6 +169,9 @@ requires-dist = [
     { name = "pyyaml" },
 ]
 provides-extras = ["docker", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "packaging"

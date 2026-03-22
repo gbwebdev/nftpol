@@ -31,8 +31,8 @@ def test_render_set_empty():
 
 def test_render_block_cidr_tcp_port():
     rule = EgressRule(cidr="185.125.190.0/24", proto="tcp", port=443, comment="apt")
-    out = render_block("myapp", _policy(rule), [], "eth0")
-    assert 'iifname "br-myapp-egress"' in out
+    out = render_block("myapp", "abc1234", _policy(rule), [], "eth0")
+    assert 'iifname "b.abc1234.egs"' in out
     assert "tcp dport 443" in out
     assert "185.125.190.0/24" in out
     assert "return" in out
@@ -45,7 +45,7 @@ def test_render_block_cidr_groups_by_proto_port():
         EgressRule(cidr="2.0.0.0/8", proto="tcp", port=443),
         EgressRule(cidr="3.0.0.0/8", proto="tcp", port=80),
     ]
-    out = render_block("myapp", _policy(*rules), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(*rules), [], "eth0")
     # Should have one rule for port 443 containing both CIDRs, one for port 80
     lines = [l for l in out.splitlines() if "tcp dport 443" in l]
     assert len(lines) == 1
@@ -56,39 +56,39 @@ def test_render_block_cidr_groups_by_proto_port():
 
 def test_render_block_proto_only():
     rule = EgressRule(cidr="10.0.0.0/8", proto="tcp")
-    out = render_block("myapp", _policy(rule), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), [], "eth0")
     assert "tcp dport" in out
     assert "port" not in out.replace("tcp dport", "")  # no port number after "tcp dport"
 
 
 def test_render_block_port_only():
     rule = EgressRule(cidr="10.0.0.0/8", port=443)
-    out = render_block("myapp", _policy(rule), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), [], "eth0")
     assert "th dport 443" in out
 
 
 def test_render_block_neither_proto_nor_port():
     rule = EgressRule(cidr="10.0.0.0/8")
-    out = render_block("myapp", _policy(rule), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), [], "eth0")
     assert "10.0.0.0/8" in out
     assert "return" in out
     assert "dport" not in out
 
 
 def test_render_block_default_deny_emits_drop():
-    out = render_block("myapp", _policy(default="deny"), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(default="deny"), [], "eth0")
     assert "drop" in out
-    assert "br-myapp-egress" in out
+    assert "b.abc1234.egs" in out
 
 
 def test_render_block_default_accept_no_drop():
     rule = EgressRule(cidr="10.0.0.0/8")
-    out = render_block("myapp", _policy(rule, default="accept"), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule, default="accept"), [], "eth0")
     assert "drop" not in out
 
 
 def test_render_block_empty_allow_default_deny():
-    out = render_block("myapp", _policy(default="deny"), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(default="deny"), [], "eth0")
     lines = [l.strip() for l in out.splitlines() if l.strip()]
     assert len(lines) == 1
     assert "drop" in lines[0]
@@ -96,7 +96,7 @@ def test_render_block_empty_allow_default_deny():
 
 def test_render_block_dynamic_rule_references_set():
     rule = EgressRule(fqdn="vpn.example.com", proto="tcp", port=443)
-    out = render_block("myapp", _policy(rule), ["1.2.3.4"], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), ["1.2.3.4"], "eth0")
     assert "@myapp-egress-dynamic" in out
     assert "tcp dport 443" in out
     assert "return" in out
@@ -104,13 +104,13 @@ def test_render_block_dynamic_rule_references_set():
 
 def test_render_block_dynamic_no_ips_skips_dynamic_rule():
     rule = EgressRule(fqdn="vpn.example.com", proto="tcp", port=443)
-    out = render_block("myapp", _policy(rule), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), [], "eth0")
     assert "@myapp-egress-dynamic" not in out
 
 
 def test_render_block_cidr_url_dynamic_rule_references_set():
     rule = EgressRule(cidr_url="https://example.com/ips", proto="tcp", port=443)
-    out = render_block("myapp", _policy(rule), ["103.21.244.0/22"], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), ["103.21.244.0/22"], "eth0")
     assert "@myapp-egress-dynamic" in out
     assert "tcp dport 443" in out
     assert "return" in out
@@ -118,7 +118,7 @@ def test_render_block_cidr_url_dynamic_rule_references_set():
 
 def test_render_block_cidr_url_no_ips_skips_dynamic_rule():
     rule = EgressRule(cidr_url="https://example.com/ips", proto="tcp", port=443)
-    out = render_block("myapp", _policy(rule), [], "eth0")
+    out = render_block("myapp", "abc1234", _policy(rule), [], "eth0")
     assert "@myapp-egress-dynamic" not in out
 
 
@@ -127,7 +127,7 @@ def test_render_block_cidr_url_and_fqdn_same_proto_port_emit_one_rule():
         EgressRule(fqdn="vpn.example.com", proto="tcp", port=443),
         EgressRule(cidr_url="https://example.com/ips", proto="tcp", port=443),
     ]
-    out = render_block("myapp", _policy(*rules), ["1.2.3.4", "103.21.244.0/22"], "eth0")
+    out = render_block("myapp", "abc1234", _policy(*rules), ["1.2.3.4", "103.21.244.0/22"], "eth0")
     dyn_lines = [l for l in out.splitlines() if "@myapp-egress-dynamic" in l and "443" in l]
     assert len(dyn_lines) == 1
 

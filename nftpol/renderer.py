@@ -89,12 +89,13 @@ def _proto_port_key(rule: EgressRule) -> tuple[str | None, int | None]:
 
 def render_block(
     app_id: str,
+    instance_id: str,
     policy: Policy,
     dynamic_ips: list[str],
     wan_iface: str,
 ) -> str:
     """Render the per-app chain rules block (between BEGIN_APP / END_APP markers)."""
-    bridge = f"br-{app_id}-egress"
+    bridge = f"b.{instance_id}.egs"
     has_dynamic = any(r.fqdn or r.service or r.cidr_url for r in policy.egress_rules)
 
     lines: list[str] = []
