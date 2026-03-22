@@ -1,0 +1,12 @@
+# Flush only our own tables on reload.
+# Never use "flush ruleset" — it wipes Docker's iptables-nft chains (DOCKER, DOCKER-USER,
+# DOCKER-ISOLATION-*) and breaks container networking until Docker is restarted.
+#
+# "add table" is a no-op if the table already exists, so this is safe on first boot.
+add table inet fw-host
+flush table inet fw-host
+
+add table ip fw-docker
+flush table ip fw-docker
+
+include "/etc/nftables.d/*.nft"

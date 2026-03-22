@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Thin wrapper — the real entry point is nftpol.cli:main."""
+from nftpol.cli import main
+
+if __name__ == "__main__":
+    main()

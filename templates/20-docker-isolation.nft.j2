@@ -1,0 +1,17 @@
+# THIS FILE IS MANAGED BY nftpol - DO NOT EDIT MANUALLY
+
+table ip fw-docker {
+
+    chain isolation {
+        type filter hook forward priority filter - 1;
+
+        # === STATIC BEGIN ===
+        # edge-rp inter-container isolation
+        iifname "{{ edge_rp_bridge }}" oifname "{{ edge_rp_bridge }}" ip saddr {{ traefik_ip }} return comment "traefik egress ok"
+        iifname "{{ edge_rp_bridge }}" oifname "{{ edge_rp_bridge }}" ip daddr {{ traefik_ip }} ct state { established, related } return comment "traefik replies ok"
+        iifname "{{ edge_rp_bridge }}" oifname "{{ edge_rp_bridge }}" drop comment "block lateral movement"
+        # === STATIC END ===
+
+        # === APP_ANCHOR ===
+    }
+}

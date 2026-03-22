@@ -1,0 +1,29 @@
+wan_iface: eth0
+traefik_ip: 172.26.63.2
+edge_rp_bridge: br-edge-rp
+
+# FQDNs in firewall-policy.yml must be under one of these domains.
+# Only use domains you own and control (pseudo-static DNS).
+# For third-party hosts (Docker Hub, apt, GitHub) always use cidr instead.
+trusted_fqdn_domains:
+  - example.com
+
+nft_isolation_file: /etc/nftables.d/20-docker-isolation.nft
+
+refresh_interval_seconds: 300
+
+# Host perimeter IP sets — fetched at refresh time, written to 05-host-ipsets.nft.
+# Referenced by 10-host.nft via @<set_name>. File must sort before 10-host.nft.
+host_ipsets_file: /etc/nftables.d/05-host-ipsets.nft
+host_ipsets:
+  cloudflare-ipv4:
+    url: https://www.cloudflare.com/ips-v4/#
+    comment: Cloudflare IPv4 ranges
+
+# nftpol renders a host-restrict chain (priority filter-1) that accepts traffic
+# from the named ipset and drops everything else on the port.
+# Do NOT put these ports in 10-host.nft's host_public_ports.
+host_restricted_ports:
+  - port: 443
+    ipset: cloudflare-ipv4
+    comment: "HTTPS - Cloudflare only"

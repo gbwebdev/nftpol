@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh nftpol dynamic IPs
+After=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/nftpol.env
+ExecStart=nftpol --config /etc/nftpol.conf.yml refresh-all /opt/app-policies
+StandardOutput=journal
+StandardError=journal
