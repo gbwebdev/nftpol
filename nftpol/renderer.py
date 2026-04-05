@@ -11,13 +11,18 @@ _INDENT = "        "  # 8 spaces — matches marker indentation in managed file
 
 def render_set(app_id: str, ips: list[str]) -> str:
     """Render the named set block for dynamic IPs (docker egress)."""
+    # flags interval is only needed (and safe) when the set contains CIDR prefixes.
+    # Plain IPs from FQDN/service resolution don't require it, and some older nft
+    # versions mis-parse plain IPs inside an interval-flagged elements block.
+    has_prefix = any("/" in ip for ip in ips)
     lines = [
         f"    # managed: {app_id}",
         f"    set {app_id}-egress-dynamic {{",
         f"        type ipv4_addr",
-        f"        flags interval",
-        f'        comment "managed: {app_id}"',
     ]
+    if has_prefix:
+        lines.append(f"        flags interval")
+    lines.append(f'        comment "managed: {app_id}"')
     if ips:
         elements = ", ".join(sorted(ips))
         lines.append(f"        elements = {{ {elements} }}")

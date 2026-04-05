@@ -132,10 +132,21 @@ def test_render_block_cidr_url_and_fqdn_same_proto_port_emit_one_rule():
     assert len(dyn_lines) == 1
 
 
+def test_render_set_plain_ips_no_interval_flag():
+    out = render_set("myapp", ["1.2.3.4", "5.6.7.8"])
+    assert "flags interval" not in out
+
+
 def test_render_set_accepts_cidr_notation():
     out = render_set("myapp", ["1.2.3.4", "103.21.244.0/22"])
     assert "103.21.244.0/22" in out
     assert "1.2.3.4" in out
+    assert "flags interval" in out
+
+
+def test_render_set_empty_no_interval_flag():
+    out = render_set("myapp", [])
+    assert "flags interval" not in out
 
 
 # --- render_host_ipsets_file ---
