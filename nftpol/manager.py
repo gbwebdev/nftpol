@@ -29,9 +29,13 @@ _RE_NAMED_SET = lambda app_id: re.compile(  # noqa: E731
     re.DOTALL | re.MULTILINE,
 )
 
+_FLUSH_PREAMBLE = "add table ip fw-docker\nflush table ip fw-docker\n"
+
 SKELETON = """\
 # THIS FILE IS MANAGED BY nftpol - DO NOT EDIT MANUALLY
 
+add table ip fw-docker
+flush table ip fw-docker
 table ip fw-docker {{
 
     chain isolation {{
@@ -48,6 +52,13 @@ table ip fw-docker {{
     }}
 }}
 """
+
+
+def _ensure_flush_preamble(content: str) -> str:
+    """Migrate files initialized without the flush preamble."""
+    if _FLUSH_PREAMBLE in content:
+        return content
+    return content.replace("\ntable ip fw-docker {", "\n" + _FLUSH_PREAMBLE + "table ip fw-docker {", 1)
 
 
 def init(config: Config, dry_run: bool = False) -> None:
@@ -88,7 +99,7 @@ def upsert(
     dynamic_ips = collect_dynamic_ips(policy)
     has_dynamic = any(r.fqdn or r.service or r.cidr_url for r in policy.egress_rules)
 
-    content = config.nft_isolation_file.read_text()
+    content = _ensure_flush_preamble(config.nft_isolation_file.read_text())
 
     # Build new block
     block_body = render_block(app_id, instance_id, policy, dynamic_ips, config.wan_iface)
@@ -169,7 +180,7 @@ def refresh(
         log.info("%s refresh %s: no dynamic entries, no-op", PREFIX, app_id)
         return
 
-    content = config.nft_isolation_file.read_text()
+    content = _ensure_flush_preamble(config.nft_isolation_file.read_text())
     set_pat = _RE_NAMED_SET(app_id)
     if not set_pat.search(content):
         if instance_id is None:
