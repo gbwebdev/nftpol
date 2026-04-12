@@ -18,7 +18,10 @@ def validate(content: str) -> None:
     )
     tmp_path = Path(tmp.name)
     try:
-        tmp.write(content)
+        # Prepend flush ruleset so nft -c starts from an empty simulated state.
+        # This prevents false "File exists" errors when objects already exist in
+        # the live kernel — the actual file uses a targeted flush table instead.
+        tmp.write("flush ruleset\n" + content)
         tmp.flush()
         tmp.close()
         result = subprocess.run(
