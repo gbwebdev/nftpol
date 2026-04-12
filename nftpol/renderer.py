@@ -22,7 +22,6 @@ def render_set(app_id: str, ips: list[str]) -> str:
     ]
     if has_prefix:
         lines.append(f"        flags interval")
-    lines.append(f'        comment "managed: {app_id}"')
     if ips:
         elements = ", ".join(sorted(ips))
         lines.append(f"        elements = {{ {elements} }}")

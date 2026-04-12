@@ -17,7 +17,6 @@ def test_render_set_with_ips():
     assert "set myapp-egress-dynamic {" in out
     assert "1.2.3.4" in out
     assert "5.6.7.8" in out
-    assert 'comment "managed: myapp"' in out
 
 
 def test_render_set_empty():

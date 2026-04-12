@@ -25,8 +25,8 @@ _RE_APP_BLOCK_FOR_ID = lambda app_id: re.compile(  # noqa: E731
 )
 _ANCHOR = "        # === APP_ANCHOR ==="
 _RE_NAMED_SET = lambda app_id: re.compile(  # noqa: E731
-    rf"    # managed: {re.escape(app_id)}\n    set {re.escape(app_id)}-egress-dynamic \{{.*?\}}\n",
-    re.DOTALL,
+    rf"    # managed: {re.escape(app_id)}\n    set {re.escape(app_id)}-egress-dynamic \{{.*?^    \}}\n",
+    re.DOTALL | re.MULTILINE,
 )
 
 SKELETON = """\

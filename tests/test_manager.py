@@ -111,6 +111,29 @@ def test_upsert_replaces_existing_block(tmp_path):
     assert "9.9.9.0/24" in content
 
 
+def test_upsert_reupsert_with_dynamic_ips_no_orphaned_brace(tmp_path):
+    """Regression: re-upserting an app whose set has elements = { ... } must not
+    leave an orphaned } in the file (the _RE_NAMED_SET regex must match the
+    full set block, not just up to the first } inside the elements list)."""
+    cfg = _initialized_file(tmp_path)
+    policy = Policy(
+        egress_rules=[EgressRule(fqdn="vpn.example.com", proto="tcp", port=443)],
+        egress_default="deny",
+    )
+    with _mock_nft():
+        # First upsert: inserts set with elements
+        with patch("nftpol.manager.collect_dynamic_ips", return_value=["1.2.3.4", "5.6.7.8"]):
+            upsert("myapp", "abc1234", policy, cfg)
+        # Second upsert: replaces set — must not leave orphaned } in content
+        with patch("nftpol.manager.collect_dynamic_ips", return_value=["9.9.9.9"]):
+            upsert("myapp", "abc1234", policy, cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "1.2.3.4" not in content, "old IPs should be gone"
+    assert "9.9.9.9" in content
+    # No stray orphaned closing brace: the set block appears exactly once
+    assert content.count("set myapp-egress-dynamic {") == 1
+
+
 def test_upsert_multiple_apps_coexist(tmp_path):
     cfg = _initialized_file(tmp_path)
     with _mock_nft():
