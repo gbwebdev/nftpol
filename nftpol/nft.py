@@ -47,12 +47,19 @@ def validate_and_write(content: str, path: Path) -> None:
         shutil.copy2(str(tmp), str(path))
     finally:
         tmp.unlink(missing_ok=True)
-    _reload()
+    _reload(path)
 
 
-def _reload() -> None:
+def _reload(path: Path) -> None:
+    """Apply the managed file directly with nft -f.
+
+    Using nft -f <path> rather than systemctl reload keeps the operation
+    targeted to our table only and avoids interference from the system's
+    main nftables.conf (which may flush and reload unrelated rules).
+    The flush preamble in the file ensures idempotency.
+    """
     result = subprocess.run(
-        ["systemctl", "reload", "nftables"],
+        ["nft", "-f", str(path)],
         capture_output=True,
         text=True,
     )
