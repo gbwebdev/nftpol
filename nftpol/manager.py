@@ -29,13 +29,18 @@ _RE_NAMED_SET = lambda app_id: re.compile(  # noqa: E731
     re.DOTALL | re.MULTILINE,
 )
 
-_FLUSH_PREAMBLE = "add table ip fw-docker\nflush table ip fw-docker\n"
+_OLD_FLUSH_PREAMBLE = "add table ip fw-docker\nflush table ip fw-docker\n"
+# delete table removes all chains, rules AND sets; add table recreates fresh.
+# This is idempotent: the leading "add table" ensures the table exists so
+# "delete table" never errors on first run.
+_FLUSH_PREAMBLE = "add table ip fw-docker\ndelete table ip fw-docker\nadd table ip fw-docker\n"
 
 SKELETON = """\
 # THIS FILE IS MANAGED BY nftpol - DO NOT EDIT MANUALLY
 
 add table ip fw-docker
-flush table ip fw-docker
+delete table ip fw-docker
+add table ip fw-docker
 table ip fw-docker {{
 
     chain isolation {{
@@ -55,9 +60,13 @@ table ip fw-docker {{
 
 
 def _ensure_flush_preamble(content: str) -> str:
-    """Migrate files initialized without the flush preamble."""
+    """Migrate files to the delete+add preamble for a clean table reset."""
     if _FLUSH_PREAMBLE in content:
         return content
+    # Migrate from old flush-table preamble (flush table leaves sets intact → EEXIST)
+    if _OLD_FLUSH_PREAMBLE in content:
+        return content.replace(_OLD_FLUSH_PREAMBLE, _FLUSH_PREAMBLE, 1)
+    # Migrate files initialized without any preamble
     return content.replace("\ntable ip fw-docker {", "\n" + _FLUSH_PREAMBLE + "table ip fw-docker {", 1)
 
 
