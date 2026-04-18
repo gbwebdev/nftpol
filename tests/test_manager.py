@@ -113,7 +113,7 @@ def test_upsert_replaces_existing_block(tmp_path):
 
 def test_upsert_reupsert_with_dynamic_ips_no_orphaned_brace(tmp_path):
     """Regression: re-upserting an app whose set has elements = { ... } must not
-    leave an orphaned } in the file (the _RE_NAMED_SET regex must match the
+    leave an orphaned } in the file (the _RE_APP_SETS regex must match the
     full set block, not just up to the first } inside the elements list)."""
     cfg = _initialized_file(tmp_path)
     policy = Policy(
@@ -122,10 +122,12 @@ def test_upsert_reupsert_with_dynamic_ips_no_orphaned_brace(tmp_path):
     )
     with _mock_nft():
         # First upsert: inserts set with elements
-        with patch("nftpol.manager.collect_dynamic_ips", return_value=["1.2.3.4", "5.6.7.8"]):
+        with patch("nftpol.manager.collect_dynamic_ips",
+                   return_value={"egress": ["1.2.3.4", "5.6.7.8"]}):
             upsert("myapp", "abc1234", policy, cfg)
         # Second upsert: replaces set — must not leave orphaned } in content
-        with patch("nftpol.manager.collect_dynamic_ips", return_value=["9.9.9.9"]):
+        with patch("nftpol.manager.collect_dynamic_ips",
+                   return_value={"egress": ["9.9.9.9"]}):
             upsert("myapp", "abc1234", policy, cfg)
     content = cfg.nft_isolation_file.read_text()
     assert "1.2.3.4" not in content, "old IPs should be gone"
@@ -204,6 +206,53 @@ def test_remove_one_does_not_affect_other(tmp_path):
     content = cfg.nft_isolation_file.read_text()
     assert "BEGIN_APP app1" not in content
     assert "BEGIN_APP app2" in content
+
+
+# --- via / multiple named sets ---
+
+
+def test_upsert_with_via_creates_multiple_sets(tmp_path):
+    cfg = _initialized_file(tmp_path)
+    policy = Policy(
+        egress_rules=[
+            EgressRule(fqdn="ext.example.com", proto="tcp", port=443),          # egress
+            EgressRule(fqdn="db.example.com", proto="tcp", port=5432, via="backend"),
+        ],
+        egress_default="deny",
+    )
+    with _mock_nft():
+        with patch("nftpol.manager.collect_dynamic_ips",
+                   return_value={"egress": ["1.2.3.4"], "backend": ["10.0.0.5"]}):
+            upsert("myapp", "abc1234", policy, cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "set myapp-egress-dynamic {" in content
+    assert "set myapp-backend-dynamic {" in content
+    assert "1.2.3.4" in content
+    assert "10.0.0.5" in content
+
+
+def test_upsert_removes_stale_via_sets(tmp_path):
+    """Re-upserting with different via keys should clean up old sets."""
+    cfg = _initialized_file(tmp_path)
+    policy_with_backend = Policy(
+        egress_rules=[EgressRule(fqdn="db.example.com", proto="tcp", port=5432, via="backend")],
+        egress_default="deny",
+    )
+    policy_without_backend = Policy(
+        egress_rules=[EgressRule(fqdn="ext.example.com", proto="tcp", port=443)],
+        egress_default="deny",
+    )
+    with _mock_nft():
+        with patch("nftpol.manager.collect_dynamic_ips",
+                   return_value={"backend": ["10.0.0.5"]}):
+            upsert("myapp", "abc1234", policy_with_backend, cfg)
+        assert "set myapp-backend-dynamic {" in cfg.nft_isolation_file.read_text()
+        with patch("nftpol.manager.collect_dynamic_ips",
+                   return_value={"egress": ["1.2.3.4"]}):
+            upsert("myapp", "abc1234", policy_without_backend, cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "set myapp-backend-dynamic {" not in content
+    assert "set myapp-egress-dynamic {" in content
 
 
 # --- list_apps ---

@@ -76,7 +76,7 @@ def test_collect_dynamic_ips_deduplicates():
     )
     with patch("nftpol.resolver.resolve_fqdn", return_value=["1.2.3.4"]):
         result = collect_dynamic_ips(policy)
-    assert result == ["1.2.3.4"]
+    assert result == {"egress": ["1.2.3.4"]}
 
 
 def test_collect_dynamic_ips_skips_cidr():
@@ -84,7 +84,7 @@ def test_collect_dynamic_ips_skips_cidr():
     with patch("nftpol.resolver.resolve_fqdn") as mock_fqdn:
         result = collect_dynamic_ips(policy)
     mock_fqdn.assert_not_called()
-    assert result == []
+    assert result == {}
 
 
 def _mock_url_response(body: bytes):
@@ -134,7 +134,7 @@ def test_collect_dynamic_ips_includes_cidr_url():
     policy = Policy(egress_rules=[EgressRule(cidr_url="https://example.com/ips")])
     with patch("nftpol.resolver.resolve_cidr_url", return_value=["103.21.244.0/22"]):
         result = collect_dynamic_ips(policy)
-    assert result == ["103.21.244.0/22"]
+    assert result == {"egress": ["103.21.244.0/22"]}
 
 
 def test_collect_dynamic_ips_plain_cidr_does_not_trigger_cidr_url():
@@ -142,3 +142,19 @@ def test_collect_dynamic_ips_plain_cidr_does_not_trigger_cidr_url():
     with patch("nftpol.resolver.resolve_cidr_url") as mock_curl:
         collect_dynamic_ips(policy)
     mock_curl.assert_not_called()
+
+
+def test_collect_dynamic_ips_groups_by_via():
+    """Rules with different via values produce separate groups."""
+    policy = Policy(
+        egress_rules=[
+            EgressRule(fqdn="ext.example.com"),            # no via → egress
+            EgressRule(fqdn="db.example.com", via="backend"),
+        ]
+    )
+    def fake_resolve(fqdn):
+        return ["1.2.3.4"] if "ext" in fqdn else ["10.0.0.5"]
+
+    with patch("nftpol.resolver.resolve_fqdn", side_effect=fake_resolve):
+        result = collect_dynamic_ips(policy)
+    assert result == {"egress": ["1.2.3.4"], "backend": ["10.0.0.5"]}

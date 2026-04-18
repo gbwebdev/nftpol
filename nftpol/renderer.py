@@ -1,23 +1,32 @@
 """Render nftables named-set and chain-rule blocks."""
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 from .config import HostRestrictedPort
 from .policy import EgressRule, Policy
 
+log = logging.getLogger("nftpol")
+_PREFIX = "[nftpol]"
+
 _INDENT = "        "  # 8 spaces — matches marker indentation in managed file
 
 
-def render_set(app_id: str, ips: list[str]) -> str:
-    """Render the named set block for dynamic IPs (docker egress)."""
+def render_set(app_id: str, set_key: str, ips: list[str]) -> str:
+    """Render the named set block for dynamic IPs (docker egress).
+
+    set_key is the via key (e.g. "egress", "backend") — the set name becomes
+    {app_id}-{set_key}-dynamic.
+    """
     # flags interval is only needed (and safe) when the set contains CIDR prefixes.
     # Plain IPs from FQDN/service resolution don't require it, and some older nft
     # versions mis-parse plain IPs inside an interval-flagged elements block.
+    set_name = f"{app_id}-{set_key}-dynamic"
     has_prefix = any("/" in ip for ip in ips)
     lines = [
         f"    # managed: {app_id}",
-        f"    set {app_id}-egress-dynamic {{",
+        f"    set {set_name} {{",
         f"        type ipv4_addr",
     ]
     if has_prefix:
@@ -95,28 +104,50 @@ def render_block(
     app_id: str,
     instance_id: str,
     policy: Policy,
-    dynamic_ips: list[str],
+    dynamic_ips_by_key: dict[str, list[str]],
     wan_iface: str,
+    bridge_map: dict[str, str] | None = None,
 ) -> str:
-    """Render the per-app chain rules block (between BEGIN_APP / END_APP markers)."""
-    bridge = f"b.{instance_id}.egs"
-    has_dynamic = any(r.fqdn or r.service or r.cidr_url for r in policy.egress_rules)
+    """Render the per-app chain rules block (between BEGIN_APP / END_APP markers).
+
+    dynamic_ips_by_key: {via_key: [ips]} from collect_dynamic_ips().
+    bridge_map: {compose_network_name: bridge_iface} from get_bridge_map().
+      Rules without via use the default egress bridge b.{instance_id}.egs.
+      Rules with via use the corresponding bridge from bridge_map; if the via
+      key is missing from bridge_map, a warning is logged and the rule is skipped.
+    """
+    if bridge_map is None:
+        bridge_map = {}
+
+    default_bridge = f"b.{instance_id}.egs"
+
+    def get_bridge(via: str | None) -> str | None:
+        if via is None:
+            return default_bridge
+        bridge = bridge_map.get(via)
+        if bridge is None:
+            log.warning("%s via: %r not found in bridge_map, skipping rule", _PREFIX, via)
+        return bridge
 
     lines: list[str] = []
 
-    # --- static CIDR rules grouped by (proto, port) ---
+    # --- static CIDR rules grouped by (via_key, proto, port) ---
+    # Key: (via, proto, port) — via preserved as-is (None or string)
     cidr_groups: dict[tuple, list[str]] = defaultdict(list)
-    cidr_comments: dict[tuple, list[str]] = {}
+    cidr_comments: dict[tuple, str] = {}
     for rule in policy.egress_rules:
         if rule.cidr is None:
             continue
-        key = _proto_port_key(rule)
+        key = (rule.via, rule.proto, rule.port)
         cidr_groups[key].append(rule.cidr)
         if rule.comment and key not in cidr_comments:
             cidr_comments[key] = rule.comment
 
     for key, cidrs in cidr_groups.items():
-        proto, port = key
+        via, proto, port = key
+        bridge = get_bridge(via)
+        if bridge is None:
+            continue
         match_parts = [f'iifname "{bridge}"']
         if proto:
             match_parts.append(f"{proto} dport")
@@ -132,14 +163,24 @@ def render_block(
             match_parts.append(f'comment "{comment}"')
         lines.append(_INDENT + " ".join(match_parts))
 
-    # --- dynamic set rules grouped by (proto, port) ---
-    if has_dynamic and dynamic_ips:
-        dyn_keys: set[tuple] = set()
-        for rule in policy.egress_rules:
-            if rule.fqdn or rule.service or rule.cidr_url:
-                dyn_keys.add(_proto_port_key(rule))
+    # --- dynamic set rules grouped by (via_key, proto, port) ---
+    # Collect which (via, proto, port) tuples have dynamic rules
+    dyn_by_via: dict[str | None, set[tuple]] = defaultdict(set)
+    for rule in policy.egress_rules:
+        if rule.fqdn or rule.service or rule.cidr_url:
+            dyn_by_via[rule.via].add((rule.proto, rule.port))
 
-        for proto, port in sorted(dyn_keys, key=lambda k: (k[0] or "", k[1] or 0)):
+    for via, proto_port_set in sorted(
+        dyn_by_via.items(), key=lambda kv: (kv[0] or "", kv[0] or "")
+    ):
+        via_key = via or "egress"
+        ips = dynamic_ips_by_key.get(via_key, [])
+        if not ips:
+            continue  # no resolved IPs for this key, skip
+        bridge = get_bridge(via)
+        if bridge is None:
+            continue
+        for proto, port in sorted(proto_port_set, key=lambda k: (k[0] or "", k[1] or 0)):
             match_parts = [f'iifname "{bridge}"']
             if proto:
                 match_parts.append(f"{proto} dport")
@@ -147,13 +188,15 @@ def render_block(
                     match_parts.append(str(port))
             elif port:
                 match_parts.append(f"th dport {port}")
-            match_parts.append(f"ip daddr @{app_id}-egress-dynamic")
+            match_parts.append(f"ip daddr @{app_id}-{via_key}-dynamic")
             match_parts.append("return")
             match_parts.append(f'comment "dynamic: {app_id}"')
             lines.append(_INDENT + " ".join(match_parts))
 
-    # --- default deny ---
+    # --- default deny (on default egress bridge) ---
     if policy.egress_default == "deny":
-        lines.append(_INDENT + f'iifname "{bridge}" drop comment "default deny: {app_id}"')
+        lines.append(
+            _INDENT + f'iifname "{default_bridge}" drop comment "default deny: {app_id}"'
+        )
 
     return "\n".join(lines) + "\n" if lines else ""

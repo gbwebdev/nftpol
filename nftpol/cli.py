@@ -45,7 +45,11 @@ def cmd_upsert(args) -> None:
     try:
         cfg = load_config(args.config)
         policy = load_policy(Path(args.policy_file))
-        upsert(args.app_id, args.instance_id, policy, cfg, dry_run=args.dry_run)
+        upsert(
+            args.app_id, args.instance_id, policy, cfg,
+            dry_run=args.dry_run,
+            rendered_compose=Path(args.rendered_compose) if args.rendered_compose else None,
+        )
     except PolicyError as e:
         _die(str(e), EXIT_VALIDATION)
     except ConfigError as e:
@@ -74,7 +78,12 @@ def cmd_refresh(args) -> None:
     try:
         cfg = load_config(args.config)
         policy = load_policy(Path(args.policy_file))
-        refresh(args.app_id, policy, cfg, dry_run=args.dry_run, instance_id=args.instance_id)
+        refresh(
+            args.app_id, policy, cfg,
+            dry_run=args.dry_run,
+            instance_id=args.instance_id,
+            rendered_compose=Path(args.rendered_compose) if args.rendered_compose else None,
+        )
     except PolicyError as e:
         _die(str(e), EXIT_VALIDATION)
     except ConfigError as e:
@@ -173,6 +182,10 @@ def main() -> None:
     p_upsert.add_argument("app_id")
     p_upsert.add_argument("instance_id")
     p_upsert.add_argument("policy_file")
+    p_upsert.add_argument(
+        "--rendered-compose", dest="rendered_compose", default=None, metavar="PATH",
+        help="Path to rendered compose.yml for bridge name resolution (required for via: rules)",
+    )
     p_upsert.add_argument("--dry-run", action="store_true")
     p_upsert.set_defaults(func=cmd_upsert)
 
@@ -189,6 +202,10 @@ def main() -> None:
     p_refresh.add_argument("--instance-id", dest="instance_id", default=None,
                            metavar="INSTANCE_ID",
                            help="Instance short ID (required if chain block is missing)")
+    p_refresh.add_argument(
+        "--rendered-compose", dest="rendered_compose", default=None, metavar="PATH",
+        help="Path to rendered compose.yml for bridge name resolution (required for via: rules)",
+    )
     p_refresh.add_argument("--dry-run", action="store_true")
     p_refresh.set_defaults(func=cmd_refresh)
 

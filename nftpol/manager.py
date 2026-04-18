@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import Config
 from .nft import validate_and_write
-from .policy import Policy, load_policy, validate_fqdn_domains
+from .policy import Policy, get_bridge_map, load_policy, validate_fqdn_domains
 from .renderer import render_block, render_host_ipsets_file, render_set
 from .resolver import collect_dynamic_ips, resolve_cidr_url
 
@@ -24,8 +24,13 @@ _RE_APP_BLOCK_FOR_ID = lambda app_id: re.compile(  # noqa: E731
     re.DOTALL,
 )
 _ANCHOR = "        # === APP_ANCHOR ==="
-_RE_NAMED_SET = lambda app_id: re.compile(  # noqa: E731
-    rf"    # managed: {re.escape(app_id)}\n    set {re.escape(app_id)}-egress-dynamic \{{.*?^    \}}\n",
+_RE_NAMED_SET_KEY = lambda app_id, key: re.compile(  # noqa: E731
+    rf"    # managed: {re.escape(app_id)}\n    set {re.escape(app_id)}-{re.escape(key)}-dynamic \{{.*?^    \}}\n",
+    re.DOTALL | re.MULTILINE,
+)
+# Matches ALL named sets for an app (any via key)
+_RE_APP_SETS = lambda app_id: re.compile(  # noqa: E731
+    rf"    # managed: {re.escape(app_id)}\n    set {re.escape(app_id)}-[\w-]+-dynamic \{{.*?^    \}}\n",
     re.DOTALL | re.MULTILINE,
 )
 
@@ -101,17 +106,26 @@ def upsert(
     policy: Policy,
     config: Config,
     dry_run: bool = False,
+    rendered_compose: "Path | None" = None,
 ) -> None:
-    """Full upsert: resolve dynamic IPs, render and insert/replace app block + set."""
+    """Full upsert: resolve dynamic IPs, render and insert/replace app block + sets."""
     validate_fqdn_domains(policy, config.trusted_fqdn_domains)
 
-    dynamic_ips = collect_dynamic_ips(policy)
-    has_dynamic = any(r.fqdn or r.service or r.cidr_url for r in policy.egress_rules)
+    dynamic_ips_by_key = collect_dynamic_ips(policy)
+    bridge_map = get_bridge_map(rendered_compose) if rendered_compose else {}
+
+    # Determine which via keys have dynamic rules (even if resolved to empty IPs)
+    dynamic_via_keys: set[str] = set()
+    for rule in policy.egress_rules:
+        if rule.fqdn or rule.service or rule.cidr_url:
+            dynamic_via_keys.add(rule.via or "egress")
 
     content = _ensure_flush_preamble(config.nft_isolation_file.read_text())
 
-    # Build new block
-    block_body = render_block(app_id, instance_id, policy, dynamic_ips, config.wan_iface)
+    # Build new chain block
+    block_body = render_block(
+        app_id, instance_id, policy, dynamic_ips_by_key, config.wan_iface, bridge_map
+    )
     new_block = (
         f"        # === BEGIN_APP {app_id} ===\n"
         f"{block_body}"
@@ -125,22 +139,20 @@ def upsert(
     else:
         content = content.replace(_ANCHOR, new_block + _ANCHOR)
 
-    # Replace or insert named set (only if app has dynamic entries)
-    set_pat = _RE_NAMED_SET(app_id)
-    if has_dynamic:
-        new_set = render_set(app_id, dynamic_ips)
-        if set_pat.search(content):
-            content = set_pat.sub(new_set, content)
-        else:
-            # Insert before "chain isolation {"
-            content = content.replace(
-                "    chain isolation {",
-                new_set + "\n    chain isolation {",
-                1,
-            )
-    else:
-        # Remove set if it exists but is no longer needed
-        content = set_pat.sub("", content)
+    # Remove ALL existing named sets for this app (clean slate)
+    content = _RE_APP_SETS(app_id).sub("", content)
+
+    # Insert new named sets for each via key with dynamic rules
+    if dynamic_via_keys:
+        new_sets = "".join(
+            render_set(app_id, key, dynamic_ips_by_key.get(key, []))
+            for key in sorted(dynamic_via_keys)
+        )
+        content = content.replace(
+            "    chain isolation {",
+            new_sets + "\n    chain isolation {",
+            1,
+        )
 
     if dry_run:
         print(f"[nftpol] DRY-RUN: would write {config.nft_isolation_file}:")
@@ -148,7 +160,7 @@ def upsert(
         return
 
     validate_and_write(content, config.nft_isolation_file)
-    log.info("%s upsert %s done (dynamic IPs: %s)", PREFIX, app_id, dynamic_ips)
+    log.info("%s upsert %s done (dynamic IPs: %s)", PREFIX, app_id, dynamic_ips_by_key)
 
 
 def remove(app_id: str, config: Config, dry_run: bool = False) -> None:
@@ -161,7 +173,7 @@ def remove(app_id: str, config: Config, dry_run: bool = False) -> None:
         return
 
     content = block_pat.sub("", content)
-    content = _RE_NAMED_SET(app_id).sub("", content)
+    content = _RE_APP_SETS(app_id).sub("", content)
 
     if dry_run:
         print(f"[nftpol] DRY-RUN: would write {config.nft_isolation_file}:")
@@ -178,31 +190,45 @@ def refresh(
     config: Config,
     dry_run: bool = False,
     instance_id: str | None = None,
+    rendered_compose: "Path | None" = None,
 ) -> None:
-    """Re-resolve dynamic entries and update named set in-place.
+    """Re-resolve dynamic entries and update named sets in-place.
 
-    Falls back to full upsert if set is missing and instance_id is provided.
+    Falls back to full upsert if any expected set is missing and instance_id is provided.
     No-op if no dynamic entries.
     """
-    has_dynamic = any(r.fqdn or r.service or r.cidr_url for r in policy.egress_rules)
-    if not has_dynamic:
+    dynamic_via_keys: set[str] = set()
+    for rule in policy.egress_rules:
+        if rule.fqdn or rule.service or rule.cidr_url:
+            dynamic_via_keys.add(rule.via or "egress")
+
+    if not dynamic_via_keys:
         log.info("%s refresh %s: no dynamic entries, no-op", PREFIX, app_id)
         return
 
     content = _ensure_flush_preamble(config.nft_isolation_file.read_text())
-    set_pat = _RE_NAMED_SET(app_id)
-    if not set_pat.search(content):
-        if instance_id is None:
-            log.warning("%s refresh %s: set missing but no instance_id, skipping upsert", PREFIX, app_id)
+
+    # Check all expected sets are present; fall back to upsert if any are missing
+    for key in dynamic_via_keys:
+        if not _RE_NAMED_SET_KEY(app_id, key).search(content):
+            if instance_id is None:
+                log.warning(
+                    "%s refresh %s: set %s missing but no instance_id, skipping upsert",
+                    PREFIX, app_id, key,
+                )
+                return
+            log.info("%s refresh %s: set %s missing, falling back to upsert", PREFIX, app_id, key)
+            upsert(app_id, instance_id, policy, config, dry_run=dry_run,
+                   rendered_compose=rendered_compose)
             return
-        log.info("%s refresh %s: set missing, falling back to upsert", PREFIX, app_id)
-        upsert(app_id, instance_id, policy, config, dry_run=dry_run)
-        return
 
     validate_fqdn_domains(policy, config.trusted_fqdn_domains)
-    dynamic_ips = collect_dynamic_ips(policy)
-    new_set = render_set(app_id, dynamic_ips)
-    content = set_pat.sub(new_set, content)
+    dynamic_ips_by_key = collect_dynamic_ips(policy)
+
+    # Update each named set in-place
+    for key in dynamic_via_keys:
+        new_set = render_set(app_id, key, dynamic_ips_by_key.get(key, []))
+        content = _RE_NAMED_SET_KEY(app_id, key).sub(new_set, content)
 
     if dry_run:
         print(f"[nftpol] DRY-RUN: would write {config.nft_isolation_file}:")
@@ -210,7 +236,7 @@ def refresh(
         return
 
     validate_and_write(content, config.nft_isolation_file)
-    log.info("%s refresh %s done (IPs: %s)", PREFIX, app_id, dynamic_ips)
+    log.info("%s refresh %s done (IPs: %s)", PREFIX, app_id, dynamic_ips_by_key)
 
 
 def refresh_host_sets(config: Config, dry_run: bool = False) -> None:

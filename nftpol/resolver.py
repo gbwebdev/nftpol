@@ -89,15 +89,35 @@ def resolve_cidr_url(url: str) -> list[str]:
     return deduped
 
 
-def collect_dynamic_ips(policy: Policy) -> list[str]:
-    """Resolve all fqdn, service, and cidr_url entries in the policy, return deduplicated list."""
-    all_ips: list[str] = []
+def collect_dynamic_ips(policy: Policy) -> dict[str, list[str]]:
+    """Resolve all fqdn, service, and cidr_url entries, grouped by via key.
+
+    Returns {via_key: [ips]} where via_key is rule.via or "egress" for rules
+    without an explicit via. Each group is deduplicated.
+    """
+    per_key: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+
     for rule in policy.egress_rules:
+        if not (rule.fqdn or rule.service or rule.cidr_url):
+            continue
+        key = rule.via or "egress"
+        if key not in per_key:
+            per_key[key] = []
+            seen[key] = set()
+
+        resolved: list[str] = []
         if rule.fqdn:
-            all_ips.extend(resolve_fqdn(rule.fqdn))
+            resolved = resolve_fqdn(rule.fqdn)
         elif rule.service:
             project, svc = rule.service.split("/", 1)
-            all_ips.extend(resolve_service(project, svc))
+            resolved = resolve_service(project, svc)
         elif rule.cidr_url:
-            all_ips.extend(resolve_cidr_url(rule.cidr_url))
-    return list(dict.fromkeys(all_ips))
+            resolved = resolve_cidr_url(rule.cidr_url)
+
+        for ip in resolved:
+            if ip not in seen[key]:
+                seen[key].add(ip)
+                per_key[key].append(ip)
+
+    return per_key

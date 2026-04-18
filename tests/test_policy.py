@@ -9,6 +9,7 @@ from nftpol.policy import (
     EgressRule,
     Policy,
     PolicyError,
+    get_bridge_map,
     load_policy,
     validate_fqdn_domains,
 )
@@ -178,6 +179,56 @@ def test_cidr_url_non_string_raises(tmp_path):
     )
     with pytest.raises(PolicyError, match="cidr_url"):
         load_policy(p)
+
+
+def test_via_field_parsed(tmp_path):
+    p = _write_policy(
+        tmp_path,
+        {
+            "egress": {
+                "allow": [
+                    {"cidr": "10.0.0.0/8", "proto": "tcp", "port": 5432, "via": "backend"},
+                ],
+                "default": "deny",
+            }
+        },
+    )
+    policy = load_policy(p)
+    assert policy.egress_rules[0].via == "backend"
+
+
+def test_via_field_optional(tmp_path):
+    p = _write_policy(
+        tmp_path,
+        {"egress": {"allow": [{"cidr": "1.2.3.0/24"}]}},
+    )
+    policy = load_policy(p)
+    assert policy.egress_rules[0].via is None
+
+
+def test_get_bridge_map_reads_driver_opts(tmp_path):
+    compose = tmp_path / "compose.yml"
+    compose.write_text(
+        "networks:\n"
+        "  egress:\n"
+        "    driver: bridge\n"
+        "    driver_opts:\n"
+        "      com.docker.network.bridge.name: b.abc1234.egs\n"
+        "  backend:\n"
+        "    driver: bridge\n"
+        "    driver_opts:\n"
+        "      com.docker.network.bridge.name: b.abc1234.bck\n"
+        "  internal:\n"
+        "    internal: true\n"
+    )
+    result = get_bridge_map(compose)
+    assert result == {"egress": "b.abc1234.egs", "backend": "b.abc1234.bck"}
+    assert "internal" not in result
+
+
+def test_get_bridge_map_missing_file_raises(tmp_path):
+    with pytest.raises(PolicyError, match="not found"):
+        get_bridge_map(tmp_path / "nonexistent.yml")
 
 
 def test_cidr_url_cannot_combine_with_cidr(tmp_path):

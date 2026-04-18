@@ -23,6 +23,7 @@ class EgressRule:
     proto: str | None = None
     port: int | None = None
     comment: str | None = None
+    via: str | None = None  # Docker Compose network name to route through
 
 
 @dataclass
@@ -88,6 +89,11 @@ def load_policy(path: Path) -> Policy:
                 )
                 port = None
 
+        via = entry.get("via")
+        if via is not None and not isinstance(via, str):
+            errors.append(f"egress.allow[{i}]: via must be a string, got {via!r}")
+            via = None
+
         rules.append(
             EgressRule(
                 cidr=entry.get("cidr"),
@@ -97,6 +103,7 @@ def load_policy(path: Path) -> Policy:
                 proto=proto,
                 port=port,
                 comment=entry.get("comment"),
+                via=via,
             )
         )
 
@@ -104,6 +111,33 @@ def load_policy(path: Path) -> Policy:
         raise PolicyError("Policy validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
     return Policy(egress_rules=rules, egress_default=default)
+
+
+def get_bridge_map(compose_path: Path) -> dict[str, str]:
+    """Read bridge name mappings from a rendered compose file.
+
+    Returns {compose_network_name: bridge_interface_name} for networks that have
+    com.docker.network.bridge.name set in driver_opts.
+    """
+    try:
+        raw = yaml.safe_load(compose_path.read_text())
+    except FileNotFoundError:
+        raise PolicyError(f"Rendered compose file not found: {compose_path}")
+    except yaml.YAMLError as e:
+        raise PolicyError(f"Compose file parse error in {compose_path}: {e}")
+
+    if not isinstance(raw, dict):
+        return {}
+
+    bridge_map: dict[str, str] = {}
+    for net_name, net_cfg in (raw.get("networks") or {}).items():
+        if not isinstance(net_cfg, dict):
+            continue
+        driver_opts = net_cfg.get("driver_opts") or {}
+        bridge = driver_opts.get("com.docker.network.bridge.name")
+        if bridge:
+            bridge_map[net_name] = bridge
+    return bridge_map
 
 
 def validate_fqdn_domains(policy: Policy, trusted_domains: list[str]) -> None:
