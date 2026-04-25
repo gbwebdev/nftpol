@@ -8,13 +8,18 @@ from pathlib import Path
 from .config import Config
 from .nft import validate_and_write
 from .policy import Policy, get_bridge_map, load_policy, validate_fqdn_domains
-from .renderer import render_block, render_host_ipsets_file, render_set
+from .renderer import render_block, render_host_ipsets_file, render_set, render_static_section
 from .resolver import collect_dynamic_ips, resolve_cidr_url
 
 log = logging.getLogger("nftpol")
 PREFIX = "[nftpol]"
 
 # Marker patterns — anchored to 8-space indentation
+_RE_STATIC = re.compile(
+    r"        # === STATIC BEGIN ===\n.*?        # === STATIC END ===\n",
+    re.DOTALL,
+)
+
 _RE_APP_BLOCK = re.compile(
     r"        # === BEGIN_APP (?P<id>\S+) ===\n.*?        # === END_APP (?P=id) ===\n",
     re.DOTALL,
@@ -51,13 +56,7 @@ table ip fw-docker {{
     chain isolation {{
         type filter hook forward priority filter - 1;
 
-        # === STATIC BEGIN ===
-        # edge-rp inter-container isolation
-        iifname "{edge_rp_bridge}" oifname "{edge_rp_bridge}" ip saddr {traefik_ip} return comment "traefik egress ok"
-        iifname "{edge_rp_bridge}" oifname "{edge_rp_bridge}" ip daddr {traefik_ip} ct state {{ established, related }} return comment "traefik replies ok"
-        iifname "{edge_rp_bridge}" oifname "{edge_rp_bridge}" drop comment "block lateral movement"
-        # === STATIC END ===
-
+{static_section}
         # === APP_ANCHOR ===
     }}
 }}
@@ -81,10 +80,8 @@ def init(config: Config, dry_run: bool = False) -> None:
     if path.exists():
         log.info("%s %s already exists, skipping init", PREFIX, path)
         return
-    content = SKELETON.format(
-        edge_rp_bridge=config.edge_rp_bridge,
-        traefik_ip=config.traefik_ip,
-    )
+    static = render_static_section(config.transverse_networks)
+    content = SKELETON.format(static_section=static)
     if dry_run:
         print(f"[nftpol] DRY-RUN: would write {path}:")
         print(content)
@@ -92,6 +89,29 @@ def init(config: Config, dry_run: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     validate_and_write(content, path)
     log.info("%s Initialized %s", PREFIX, path)
+
+
+def apply_transverse(config: Config, dry_run: bool = False) -> None:
+    """Re-render the STATIC section from current config and replace it in the isolation file.
+
+    No-op if the file does not exist (run init first) or if content is unchanged.
+    """
+    path = config.nft_isolation_file
+    if not path.exists():
+        log.info("%s apply-transverse: %s does not exist, run init first", PREFIX, path)
+        return
+    content = path.read_text()
+    new_static = render_static_section(config.transverse_networks)
+    new_content = _RE_STATIC.sub(new_static, content)
+    if new_content == content:
+        log.info("%s apply-transverse: no change", PREFIX)
+        return
+    if dry_run:
+        print(f"[nftpol] DRY-RUN: would write {path}:")
+        print(new_content)
+        return
+    validate_and_write(new_content, path)
+    log.info("%s apply-transverse: updated %d network(s)", PREFIX, len(config.transverse_networks))
 
 
 def list_apps(config: Config) -> list[str]:
@@ -272,7 +292,15 @@ def refresh_host_sets(config: Config, dry_run: bool = False) -> None:
 
 
 def refresh_all(policy_dir: Path, config: Config, dry_run: bool = False) -> None:
-    """Discover and refresh all apps, then refresh host IP sets."""
+    """Discover and refresh all apps, then refresh host IP sets.
+
+    Also syncs transverse network rules with current config.
+    """
+    try:
+        apply_transverse(config, dry_run=dry_run)
+    except Exception as e:
+        log.error("%s refresh-all: apply-transverse failed: %s", PREFIX, e)
+
     for policy_file in sorted(policy_dir.glob("*/firewall-policy.yml")):
         app_id = policy_file.parent.name
         log.info("%s refresh-all: processing %s", PREFIX, app_id)

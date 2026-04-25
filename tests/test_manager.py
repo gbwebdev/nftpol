@@ -5,9 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nftpol.config import Config
+from nftpol.config import Config, TransverseNetwork
 from nftpol.manager import (
     _ANCHOR,
+    apply_transverse,
     init,
     list_apps,
     remove,
@@ -24,6 +25,20 @@ def _cfg(tmp_path: Path, traefik_ip="172.20.0.2", bridge="br-edge-rp") -> Config
         edge_rp_bridge=bridge,
         nft_isolation_file=iso,
         trusted_fqdn_domains=["example.com"],
+    )
+
+
+def _cfg_transverse(tmp_path: Path, networks=None) -> Config:
+    """Config with transverse_networks (new-style config)."""
+    if networks is None:
+        networks = [
+            TransverseNetwork(name="edge_rp", bridge="br-edge-rp",
+                              privileged_ip="172.26.48.1", direction="outbound"),
+        ]
+    return Config(
+        wan_iface="eth0",
+        nft_isolation_file=tmp_path / "20-docker-isolation.nft",
+        transverse_networks=networks,
     )
 
 
@@ -270,3 +285,101 @@ def test_list_apps_returns_all_managed(tmp_path):
 def test_list_apps_empty(tmp_path):
     cfg = _initialized_file(tmp_path)
     assert list_apps(cfg) == []
+
+
+# --- init with transverse_networks ---
+
+
+def test_init_with_transverse_networks_writes_rules(tmp_path):
+    cfg = _cfg_transverse(tmp_path)
+    with _mock_nft():
+        init(cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "STATIC BEGIN" in content
+    assert "br-edge-rp" in content
+    assert "172.26.48.1" in content
+    assert _ANCHOR in content
+
+
+def test_init_with_empty_transverse_networks(tmp_path):
+    cfg = _cfg_transverse(tmp_path, networks=[])
+    with _mock_nft():
+        init(cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "STATIC BEGIN" in content
+    assert "STATIC END" in content
+    assert "iifname" not in content.split("STATIC END")[1].split("APP_ANCHOR")[0]
+    assert _ANCHOR in content
+
+
+# --- apply_transverse ---
+
+
+def _initialized_transverse(tmp_path: Path, networks=None) -> Config:
+    cfg = _cfg_transverse(tmp_path, networks=networks)
+    with _mock_nft():
+        init(cfg)
+    return cfg
+
+
+def test_apply_transverse_replaces_static_section(tmp_path):
+    cfg = _initialized_transverse(tmp_path, networks=[])
+    # Add a transverse network after init
+    cfg.transverse_networks = [
+        TransverseNetwork(name="shared_db", bridge="br-db",
+                          privileged_ip="10.0.0.5", direction="inbound"),
+    ]
+    with _mock_nft():
+        apply_transverse(cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "br-db" in content
+    assert "10.0.0.5" in content
+
+
+def test_apply_transverse_preserves_app_blocks(tmp_path):
+    cfg = _initialized_transverse(tmp_path)
+    with _mock_nft():
+        upsert("myapp", "abc1234", _simple_policy(), cfg)
+    cfg.transverse_networks = [
+        TransverseNetwork(name="shared_db", bridge="br-db",
+                          privileged_ip="10.0.0.5", direction="inbound"),
+    ]
+    with _mock_nft():
+        apply_transverse(cfg)
+    content = cfg.nft_isolation_file.read_text()
+    assert "BEGIN_APP myapp" in content
+    assert "br-db" in content
+
+
+def test_apply_transverse_preserves_anchor(tmp_path):
+    cfg = _initialized_transverse(tmp_path)
+    with _mock_nft():
+        apply_transverse(cfg)
+    assert _ANCHOR in cfg.nft_isolation_file.read_text()
+
+
+def test_apply_transverse_dry_run_no_write(tmp_path):
+    cfg = _initialized_transverse(tmp_path)
+    cfg.transverse_networks = [
+        TransverseNetwork(name="new_net", bridge="br-new",
+                          privileged_ip="10.9.9.1", direction="outbound"),
+    ]
+    with _mock_nft() as mock_vaw:
+        apply_transverse(cfg, dry_run=True)
+    mock_vaw.assert_not_called()
+
+
+def test_apply_transverse_noop_when_unchanged(tmp_path):
+    cfg = _initialized_transverse(tmp_path)
+    with _mock_nft() as mock_vaw:
+        apply_transverse(cfg)
+    # Same config → no change → no write
+    mock_vaw.assert_not_called()
+
+
+def test_apply_transverse_noop_if_file_missing(tmp_path):
+    cfg = _cfg_transverse(tmp_path)
+    # File not initialized — should not raise
+    with _mock_nft() as mock_vaw:
+        apply_transverse(cfg)
+    mock_vaw.assert_not_called()

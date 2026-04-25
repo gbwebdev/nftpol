@@ -8,7 +8,8 @@ from pathlib import Path
 import yaml
 
 DEFAULT_CONF_PATH = Path("/etc/nftpol.conf.yml")
-REQUIRED_FIELDS = ("wan_iface", "traefik_ip", "edge_rp_bridge", "nft_isolation_file")
+REQUIRED_FIELDS = ("wan_iface", "nft_isolation_file")
+VALID_DIRECTIONS = ("outbound", "inbound")
 
 
 class ConfigError(Exception):
@@ -29,16 +30,58 @@ class HostRestrictedPort:
 
 
 @dataclass
+class TransverseNetwork:
+    """A transverse Docker network with one privileged component.
+
+    direction="outbound": the privileged component initiates (Traefik, Prometheus).
+    direction="inbound":  other containers initiate toward the privileged one (DB).
+    """
+    name: str            # logical name, e.g. "edge_rp", "shared_db"
+    bridge: str          # Docker bridge interface, e.g. "br-edge-rp"
+    privileged_ip: str   # IP of the central component (first IP of /26)
+    direction: str       # "outbound" or "inbound"
+    comment: str = ""
+
+
+@dataclass
 class Config:
     wan_iface: str
-    traefik_ip: str
-    edge_rp_bridge: str
     nft_isolation_file: Path
+    # Legacy fields — kept for backward compat; use transverse_networks instead.
+    traefik_ip: str | None = None
+    edge_rp_bridge: str | None = None
+    transverse_networks: list[TransverseNetwork] = field(default_factory=list)
     trusted_fqdn_domains: list[str] = field(default_factory=list)
     refresh_interval_seconds: int = 300
     host_ipsets: dict[str, HostIpset] = field(default_factory=dict)
     host_ipsets_file: Path = field(default_factory=lambda: Path("/etc/nftables.d/05-host-ipsets.nft"))
     host_restricted_ports: list[HostRestrictedPort] = field(default_factory=list)
+
+
+def _parse_transverse_networks(raw_list: list, path: Path) -> list[TransverseNetwork]:
+    networks: list[TransverseNetwork] = []
+    for i, entry in enumerate(raw_list):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"transverse_networks[{i}]: must be a mapping")
+        for required in ("name", "bridge", "privileged_ip", "direction"):
+            if required not in entry:
+                raise ConfigError(
+                    f"transverse_networks[{i}]: missing required field '{required}'"
+                )
+        direction = entry["direction"]
+        if direction not in VALID_DIRECTIONS:
+            raise ConfigError(
+                f"transverse_networks[{i}]: direction must be one of "
+                f"{VALID_DIRECTIONS}, got {direction!r}"
+            )
+        networks.append(TransverseNetwork(
+            name=str(entry["name"]),
+            bridge=str(entry["bridge"]),
+            privileged_ip=str(entry["privileged_ip"]),
+            direction=direction,
+            comment=str(entry.get("comment", "")),
+        ))
+    return networks
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -59,6 +102,24 @@ def load_config(path: Path | None = None) -> Config:
     missing = [f for f in REQUIRED_FIELDS if f not in raw]
     if missing:
         raise ConfigError(f"Missing required config fields: {', '.join(missing)}")
+
+    # Parse transverse_networks
+    transverse_networks: list[TransverseNetwork] = []
+    if "transverse_networks" in raw and raw["transverse_networks"]:
+        transverse_networks = _parse_transverse_networks(
+            raw["transverse_networks"], path
+        )
+    elif raw.get("traefik_ip") and raw.get("edge_rp_bridge"):
+        # Backward compat: auto-convert legacy Traefik fields
+        transverse_networks = [
+            TransverseNetwork(
+                name="edge_rp",
+                bridge=str(raw["edge_rp_bridge"]),
+                privileged_ip=str(raw["traefik_ip"]),
+                direction="outbound",
+                comment="Traefik reverse proxy (legacy config)",
+            )
+        ]
 
     host_ipsets: dict[str, HostIpset] = {}
     for name, cfg in (raw.get("host_ipsets") or {}).items():
@@ -92,9 +153,10 @@ def load_config(path: Path | None = None) -> Config:
 
     return Config(
         wan_iface=raw["wan_iface"],
-        traefik_ip=raw["traefik_ip"],
-        edge_rp_bridge=raw["edge_rp_bridge"],
         nft_isolation_file=Path(raw["nft_isolation_file"]),
+        traefik_ip=raw.get("traefik_ip"),
+        edge_rp_bridge=raw.get("edge_rp_bridge"),
+        transverse_networks=transverse_networks,
         trusted_fqdn_domains=raw.get("trusted_fqdn_domains") or [],
         refresh_interval_seconds=int(raw.get("refresh_interval_seconds", 300)),
         host_ipsets=host_ipsets,

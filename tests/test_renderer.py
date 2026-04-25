@@ -1,8 +1,15 @@
 """Tests for nftpol/renderer.py"""
 import pytest
 
+from nftpol.config import TransverseNetwork
 from nftpol.policy import EgressRule, Policy
-from nftpol.renderer import render_block, render_host_ipsets_file, render_set
+from nftpol.renderer import (
+    render_block,
+    render_host_ipsets_file,
+    render_set,
+    render_static_section,
+    render_transverse_block,
+)
 
 
 def _policy(*rules, default="deny"):
@@ -239,3 +246,85 @@ def test_render_host_ipsets_file_elements_sorted():
     idx_100 = out.index("100.0.0.0/8")
     idx_200 = out.index("200.0.0.0/8")
     assert idx_100 < idx_200
+
+
+# --- render_transverse_block ---
+
+
+def _outbound(name="edge_rp", bridge="br-edge-rp", ip="172.26.48.1", comment=""):
+    return TransverseNetwork(name=name, bridge=bridge, privileged_ip=ip,
+                             direction="outbound", comment=comment)
+
+
+def _inbound(name="shared_db", bridge="br-db", ip="172.26.48.65", comment=""):
+    return TransverseNetwork(name=name, bridge=bridge, privileged_ip=ip,
+                             direction="inbound", comment=comment)
+
+
+def test_render_transverse_block_outbound_saddr_initiates():
+    """Outbound: privileged_ip initiates → saddr match + ct state for replies + drop."""
+    out = render_transverse_block(_outbound())
+    assert 'iifname "br-edge-rp" oifname "br-edge-rp" ip saddr 172.26.48.1 return' in out
+    assert 'iifname "br-edge-rp" oifname "br-edge-rp" ip daddr 172.26.48.1 ct state { established, related } return' in out
+    assert 'iifname "br-edge-rp" oifname "br-edge-rp" drop' in out
+
+
+def test_render_transverse_block_inbound_daddr_initiates():
+    """Inbound: others initiate toward privileged_ip → daddr match + ct state + drop."""
+    out = render_transverse_block(_inbound())
+    assert 'iifname "br-db" oifname "br-db" ip daddr 172.26.48.65 return' in out
+    assert 'iifname "br-db" oifname "br-db" ip saddr 172.26.48.65 ct state { established, related } return' in out
+    assert 'iifname "br-db" oifname "br-db" drop' in out
+
+
+def test_render_transverse_block_comment_included():
+    out = render_transverse_block(_outbound(comment="Traefik RP"))
+    assert "Traefik RP" in out
+
+
+def test_render_transverse_block_no_comment_no_extra_noise():
+    out = render_transverse_block(_outbound(comment=""))
+    # Comment line should just be the name, no trailing noise
+    comment_lines = [l for l in out.splitlines() if l.strip().startswith("#")]
+    assert len(comment_lines) == 1
+    assert "edge_rp" in comment_lines[0]
+
+
+def test_render_transverse_block_uses_indent():
+    """All rule lines must start with 8 spaces to match nftables file indentation."""
+    out = render_transverse_block(_outbound())
+    rule_lines = [l for l in out.splitlines() if "iifname" in l]
+    assert all(l.startswith("        ") for l in rule_lines)
+
+
+# --- render_static_section ---
+
+
+def test_render_static_section_empty():
+    out = render_static_section([])
+    assert "# === STATIC BEGIN ===" in out
+    assert "# === STATIC END ===" in out
+    assert "iifname" not in out
+
+
+def test_render_static_section_single_network():
+    out = render_static_section([_outbound()])
+    assert "# === STATIC BEGIN ===" in out
+    assert "# === STATIC END ===" in out
+    assert "br-edge-rp" in out
+    assert out.index("# === STATIC BEGIN ===") < out.index("# === STATIC END ===")
+
+
+def test_render_static_section_two_networks():
+    out = render_static_section([_outbound(), _inbound()])
+    assert "br-edge-rp" in out
+    assert "br-db" in out
+    assert out.index("# === STATIC BEGIN ===") < out.index("# === STATIC END ===")
+
+
+def test_render_static_section_markers_indented():
+    """BEGIN/END markers must have 8-space indent."""
+    out = render_static_section([])
+    for line in out.splitlines():
+        if "STATIC BEGIN" in line or "STATIC END" in line:
+            assert line.startswith("        "), f"marker not indented: {line!r}"

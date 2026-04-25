@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_config
-from .manager import init, list_apps, refresh, refresh_all, refresh_host_sets, remove, upsert
+from .manager import apply_transverse, init, list_apps, refresh, refresh_all, refresh_host_sets, remove, upsert
 from .nft import NftError
 from .policy import PolicyError, load_policy
 from .resolver import ResolverError
@@ -100,6 +100,18 @@ def cmd_refresh_all(args) -> None:
     try:
         cfg = load_config(args.config)
         refresh_all(Path(args.policy_dir), cfg, dry_run=args.dry_run)
+    except ConfigError as e:
+        _die(str(e), EXIT_VALIDATION)
+    except NftError as e:
+        _die(str(e), EXIT_NFT_SYNTAX)
+    except OSError as e:
+        _die(str(e), EXIT_SYSTEM)
+
+
+def cmd_refresh_transverse(args) -> None:
+    try:
+        cfg = load_config(args.config)
+        apply_transverse(cfg, dry_run=args.dry_run)
     except ConfigError as e:
         _die(str(e), EXIT_VALIDATION)
     except NftError as e:
@@ -214,6 +226,14 @@ def main() -> None:
     p_refresh_all.add_argument("policy_dir")
     p_refresh_all.add_argument("--dry-run", action="store_true")
     p_refresh_all.set_defaults(func=cmd_refresh_all)
+
+    # refresh-transverse
+    p_rt = sub.add_parser(
+        "refresh-transverse",
+        help="Re-apply transverse network isolation rules from config",
+    )
+    p_rt.add_argument("--dry-run", action="store_true")
+    p_rt.set_defaults(func=cmd_refresh_transverse)
 
     # refresh-host-sets
     p_rhs = sub.add_parser("refresh-host-sets", help="Fetch host IP sets from configured URLs")

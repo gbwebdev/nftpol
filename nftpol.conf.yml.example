@@ -1,6 +1,34 @@
 wan_iface: eth0
-traefik_ip: 172.26.63.2
-edge_rp_bridge: br-edge-rp
+
+# --- Transverse networks ---
+# Networks shared across applications where one component has privileged access.
+# direction: "outbound" → privileged_ip initiates (Traefik, Prometheus)
+#            "inbound"  → others initiate toward privileged_ip (shared DB)
+#
+# privileged_ip is assigned statically in the service's compose file (ipam.config).
+# Convention: first usable IP of the network's /26.
+transverse_networks:
+  - name: edge_rp
+    bridge: br-edge-rp
+    privileged_ip: 172.26.48.1
+    direction: outbound
+    comment: "Traefik reverse proxy"
+  - name: shared_db
+    bridge: br-shared-db
+    privileged_ip: 172.26.48.65
+    direction: inbound
+    comment: "Shared PostgreSQL"
+  - name: prometheus
+    bridge: br-prometheus
+    privileged_ip: 172.26.48.129
+    direction: outbound
+    comment: "Prometheus scraping"
+
+# Deprecated — use transverse_networks instead. Kept for backward compatibility:
+# if traefik_ip + edge_rp_bridge are set and transverse_networks is absent,
+# nftpol auto-generates an "edge_rp" transverse_networks entry from them.
+# traefik_ip: 172.26.48.1
+# edge_rp_bridge: br-edge-rp
 
 # FQDNs in firewall-policy.yml must be under one of these domains.
 # Only use domains you own and control (pseudo-static DNS).

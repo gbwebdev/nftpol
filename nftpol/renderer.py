@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
-from .config import HostRestrictedPort
+from .config import HostRestrictedPort, TransverseNetwork
 from .policy import EgressRule, Policy
 
 log = logging.getLogger("nftpol")
@@ -94,6 +94,55 @@ def render_host_ipsets_file(
     lines.append("}")
     lines.append("")
     return "\n".join(lines)
+
+
+def render_transverse_block(network: TransverseNetwork) -> str:
+    """Render the 3-line isolation block for a single transverse network.
+
+    outbound: privileged_ip initiates (Traefik, Prometheus) → saddr match.
+    inbound:  others initiate toward privileged_ip (DB) → daddr match.
+    """
+    b = network.bridge
+    ip = network.privileged_ip
+    name = network.name
+    comment_part = f" — {network.comment}" if network.comment else ""
+
+    lines = [f"{_INDENT}# {name} isolation{comment_part}"]
+    if network.direction == "outbound":
+        lines.append(
+            f'{_INDENT}iifname "{b}" oifname "{b}" ip saddr {ip} return'
+            f' comment "{name} egress ok"'
+        )
+        lines.append(
+            f'{_INDENT}iifname "{b}" oifname "{b}" ip daddr {ip}'
+            f' ct state {{ established, related }} return comment "{name} replies ok"'
+        )
+    else:  # inbound
+        lines.append(
+            f'{_INDENT}iifname "{b}" oifname "{b}" ip daddr {ip} return'
+            f' comment "{name} ingress ok"'
+        )
+        lines.append(
+            f'{_INDENT}iifname "{b}" oifname "{b}" ip saddr {ip}'
+            f' ct state {{ established, related }} return comment "{name} replies ok"'
+        )
+    lines.append(
+        f'{_INDENT}iifname "{b}" oifname "{b}" drop'
+        f' comment "block lateral movement on {name}"'
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_static_section(networks: list[TransverseNetwork]) -> str:
+    """Render the full STATIC section (BEGIN/END markers + all transverse blocks)."""
+    lines = [f"{_INDENT}# === STATIC BEGIN ==="]
+    for i, net in enumerate(networks):
+        if i > 0:
+            lines.append("")
+        # render_transverse_block already ends with \n; strip it to join cleanly
+        lines.append(render_transverse_block(net).rstrip("\n"))
+    lines.append(f"{_INDENT}# === STATIC END ===")
+    return "\n".join(lines) + "\n"
 
 
 def _proto_port_key(rule: EgressRule) -> tuple[str | None, int | None]:
